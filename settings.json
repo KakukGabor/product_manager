@@ -1,0 +1,117 @@
+{
+    "version": "1.2",
+    "general_settings": {
+        "is_first_run": true,
+        "last_run_date": ""
+    },
+    "client_settings": {
+        "download_folder": "D:/Letöltések",
+        "main_splitter_sizes": [
+            463,
+            547,
+            268
+        ],
+        "list_view_sort_column": 6,
+        "list_view_sort_order": 1,
+        "list_view_font_size": 10,
+        "list_view_row_padding": 8
+    },
+    "server_settings": {
+        "website_url": "restauraltantikbutorok.hu",
+        "ftp_host": "37.221.209.8",
+        "ftp_user": "kakszi",
+        "ftp_pass": "python",
+        "ftp_port": 22
+    },
+    "browser_settings": {
+        "headless": false,
+        "browser_type": "chromium",
+        "auto_accept_cookies": true,
+        "default_navigation_timeout_ms": 8000,
+        "element_visibility_timeout_ms": 6000,
+        "browser_close_timeout_s": 5,
+        "post_action_delay_ms": 600,
+        "cookie_acceptance_status": {}
+    },
+    "site_configs": {
+        "galeria_savaria": {
+            "button_target_url": "https://galeriasavaria.hu/",
+            "products_url": "https://galeriasavaria.hu/felhasznalo/eladas/elado-termekeim/",
+            "new_product_url": "https://galeriasavaria.hu/felhasznalo/eladas/uj-termek-feltoltese/alapadatok/"
+        },
+        "jofogas": {
+            "button_target_url": "https://www.jofogas.hu/",
+            "products_url": "https://www.jofogas.hu/fiok/hirdeteseim",
+            "new_product_url": "https://www2.jofogas.hu/ai/form/1",
+            "upload_success_url": "https://www2.jofogas.hu/ai/confirm/0"
+        },
+        "facebook": {
+            "button_target_url": "https://www.facebook.com/",
+            "page_id": "103978284320096",
+            "access_token": "EAAdqm2BRcEcBQN5AvG4kwNXig7iLXuZCIeFPj4qXU0JsCs2kkbPiS9JCZBhGSZBCGajLQ31tPfoqh0r7ScEfF6VH04IJkPG2HoZCYKAt2zMWz8acXLKdQCgLMGH5752lSvKLkvO4bQzIidVcveXLoZAgkRT9WgLTXNBXEYB9134FZBGoFc0Bz2ABoKZBMnxDyKN8mgZD"
+        }
+    },
+    "image_settings": {
+        "background_image_path": "D:/dev/python/projects/product_manager/app_data_storage/image_backgrounds/default_background.jpg"
+    },
+    "ai_settings": {
+        "google_api_key": "AIzaSyA_O-nZz5OnsSdLhRsTQbmx0mqWR02JvOA"
+    },
+    "text_editor_settings": {
+        "geometry": [
+            207,
+            79,
+            910,
+            600
+        ],
+        "toolbar_button_order": [],
+        "button_states": {}
+    },
+    "toolbar_button_order": [],
+    "detail_toolbar_order": [
+        "sold_btn",
+        "product_upload_btn",
+        "remove_from_markets_btn",
+        "refresh_jf_product_btn",
+        null,
+        null,
+        "description_format_btn",
+        "export_product_btn",
+        "email_btn"
+    ],
+    "email_settings": {
+        "sender_email": "kakukgabor78@gmail.com",
+        "app_password": "fpos ddsd cmrp gnrl",
+        "recipient_email": "kakukmisi13@gmail.com"
+    },
+    "main_toolbar_order": [
+        "ftp_toggle",
+        "browser_toggle",
+        "gs_auto_btn",
+        "jf_auto_btn",
+        "fb_auto_btn",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "ai_generate_desc",
+        "add_product_btn",
+        "check_database_btn",
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "text_editor_toggle",
+        "settings_toggle"
+    ]
+}

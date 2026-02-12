@@ -1,0 +1,9 @@
+# Python ideiglenes fájlok
+__pycache__/
+*.py[cod]
+
+# Virtuális környezet
+venv/
+
+# Minden, ami az app_data_storage mappában van
+app_data_storage/
