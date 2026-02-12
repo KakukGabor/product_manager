@@ -1,0 +1,291 @@
+# migration_tool.py
+import sys
+import os
+import re
+import json
+from datetime import datetime
+from pathlib import Path
+import shutil
+import threading
+
+# Szükséges csomagok: PySide6, Pillow
+# Telepítés: pip install PySide6 Pillow
+from PySide6.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QFormLayout, QLineEdit,
+    QPushButton, QFileDialog, QTextEdit, QLabel, QProgressBar
+)
+from PySide6.QtCore import Qt, QThread, Signal
+from PIL import Image
+
+# --- Globális Konfiguráció és Segédfüggvények ---
+
+LOG_LEVELS = {
+    "INFO": "black",
+    "SUCCESS": "green",
+    "WARNING": "orange",
+    "ERROR": "red",
+    "SKIPPED": "gray"
+}
+
+def sanitize_for_slug(s: str) -> str:
+    if not s: return ""
+    s = s.lower().strip()
+    replacements = {'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ö': 'o', 'ő': 'o', 'ú': 'u', 'ü': 'u', 'ű': 'u'}
+    for char, replacement in replacements.items():
+        s = s.replace(char, replacement)
+    s = s.replace(' ', '-')
+    s = re.sub(r'[^\w-]', '', s)
+    s = re.sub(r'[-]+', '-', s).strip('-')
+    return s
+
+def resize_image_on_canvas(img: Image.Image, canvas_size: tuple[int, int] = (2048, 2048)) -> Image.Image:
+    """Átméretez egy képet egy vászonra, középre igazítva, képarányt megtartva."""
+    img.thumbnail(canvas_size, Image.Resampling.LANCZOS)
+    
+    if img.mode == 'RGBA' and not any(pixel[3] < 255 for pixel in img.getdata()):
+        img = img.convert('RGB')
+        
+    canvas = Image.new(img.mode if img.mode == 'RGBA' else 'RGB', canvas_size, (0, 0, 0, 0) if img.mode == 'RGBA' else (255, 255, 255))
+    x_offset = (canvas_size[0] - img.width) // 2
+    y_offset = (canvas_size[1] - img.height) // 2
+    canvas.paste(img, (x_offset, y_offset))
+    return canvas
+
+# --- A Háttérben Futó Migrációs Logika ---
+
+class MigrationWorker(QThread):
+    progress_signal = Signal(str, str)
+    finished_signal = Signal(str)
+    progress_value_signal = Signal(int)
+
+    def __init__(self, source_images_dir, output_dir, upload_txt_path):
+        super().__init__()
+        self.source_images_dir = Path(source_images_dir)
+        self.output_dir = Path(output_dir)
+        self.upload_txt_path = Path(upload_txt_path)
+        self.is_running = True
+
+    def run(self):
+        try:
+            self.progress_signal.emit(f"'{self.upload_txt_path.name}' beolvasása (cp1252 kódolással)...", "INFO")
+            with open(self.upload_txt_path, 'r', encoding='cp1252', errors='ignore') as f:
+                content = f.read()
+            
+            all_fields = content.split('***')
+            old_products_db = {}
+            
+            i = 0
+            while i + 6 < len(all_fields):
+                try:
+                    record_parts = all_fields[i:i+7]
+                    product_id = record_parts[2].strip()
+                    if not product_id or not product_id.isdigit():
+                        i += 1
+                        continue
+                    old_products_db[product_id] = {
+                        "name": record_parts[1].strip(), "type": int(record_parts[3].strip()),
+                        "color": int(record_parts[4].strip()), "price": int(record_parts[5].strip()),
+                        "description": record_parts[6].strip().replace('§§', '\n\n')
+                    }
+                    i += 7
+                except (ValueError, IndexError):
+                    i += 1
+                    continue
+            
+            self.progress_signal.emit(f"{len(old_products_db)} termékadat sikeresen beolvasva az adatfájlból.", "SUCCESS")
+
+            self.progress_signal.emit("Termékmappák keresése a forráskönyvtárban...", "INFO")
+            source_product_dirs = [d for d in self.source_images_dir.rglob('*_*') if d.is_dir()]
+            self.progress_signal.emit(f"{len(source_product_dirs)} potenciális termékmappa található.", "INFO")
+            
+            total_dirs = len(source_product_dirs)
+            processed_count = 0
+            uncategorized_count = 0
+            skipped_count = 0
+
+            for i, old_dir in enumerate(source_product_dirs):
+                if not self.is_running:
+                    self.progress_signal.emit("A folyamat megszakítva.", "WARNING")
+                    break
+
+                self.progress_value_signal.emit(int(((i + 1) / total_dirs) * 100))
+                
+                dir_name = old_dir.name
+                match = re.match(r'(\d+)_', dir_name)
+                if not match: continue
+                
+                product_id = match.group(1)
+                
+                image_files_for_check = list(old_dir.iterdir())
+                if not any(f.suffix.lower() == '.png' for f in image_files_for_check):
+                    self.progress_signal.emit(f"Kihagyva (nincs .png): A(z) '{dir_name}' mappában nincs transzparens kép.", "SKIPPED")
+                    skipped_count += 1
+                    continue
+
+                if product_id in old_products_db:
+                    # --- NORMÁL FELDOLGOZÁS (ADATBÁZISBÓL) ---
+                    old_product_data = old_products_db[product_id]
+                    self.progress_signal.emit(f"Feldolgozás: '{old_product_data['name']}' (ID: {product_id})", "INFO")
+                    
+                    new_product_dir = self.output_dir / f"product_{product_id}"
+                    price_numeric = float(old_product_data["price"])
+                    product_title = old_product_data["name"]
+                    product_description = old_product_data["description"]
+                    
+                    processed_count += 1
+                else:
+                    # --- ÁRVA MAPPA FELDOLGOZÁSA ---
+                    self.progress_signal.emit(f"Árva mappa: '{dir_name}' nem szerepel az adatbázisban, feldolgozás az '_uncategorized_products_' mappába.", "WARNING")
+                    
+                    price_from_name = 0
+                    price_match = re.search(r'_(\d+)', dir_name)
+                    if price_match:
+                        try: price_from_name = int(price_match.group(1)) * 1000
+                        except (ValueError, IndexError): price_from_name = 0
+
+                    uncategorized_root = self.output_dir / "_uncategorized_products_"
+                    new_product_dir = uncategorized_root / f"product_{product_id}"
+                    
+                    price_numeric = float(price_from_name)
+                    product_title = f"Ismeretlen termék (ID: {product_id})"
+                    product_description = "Ez a termék a fájlrendszerből lett migrálva, de nem szerepelt az 'upload.txt' adatbázisban. Az adatok manuális pótlást igényelnek."
+                    
+                    uncategorized_count += 1
+
+                # --- KÖZÖS LOGIKA: KÉPFELDOLGOZÁS ÉS JSON MENTÉS ---
+                new_images_dir = new_product_dir / "images"
+                new_images_dir.mkdir(parents=True, exist_ok=True)
+                image_counters = {"original_": 0, "transparent_": 0, "mixed_": 0}
+
+                for img_path in image_files_for_check:
+                    if not img_path.is_file(): continue
+                    
+                    filename_lower, prefix, new_ext = img_path.name.lower(), "", ".jpg"
+                    if img_path.suffix.lower() == '.png': prefix, new_ext = "transparent_", ".png"
+                    elif 'o' in filename_lower: prefix = "original_"
+                    elif 'u' in filename_lower: prefix = "mixed_"
+                    if not prefix: continue
+
+                    try:
+                        with Image.open(img_path) as img:
+                            resized_img = resize_image_on_canvas(img)
+                            image_counters[prefix] += 1
+                            new_filename = f"{prefix}{image_counters[prefix]:03d}{new_ext}"
+                            save_path = new_images_dir / new_filename
+                            save_params = {'quality': 90} if new_ext == ".jpg" else {}
+                            if resized_img.mode == 'RGBA' and new_ext == ".jpg":
+                                resized_img = resized_img.convert('RGB')
+                            resized_img.save(save_path, **save_params)
+                    except Exception as e:
+                        self.progress_signal.emit(f"Képfeldolgozási hiba: {img_path.name} - {e}", "ERROR")
+
+                new_product_json = {
+                    "id": str(product_id), "title": product_title, "price_numeric": price_numeric,
+                    "price_raw": f"{int(price_numeric)} Ft", "created_at": datetime.now().isoformat(),
+                    "description": product_description, "num_original_images": image_counters["original_"],
+                    "num_transparent_images": image_counters["transparent_"], "num_mixed_images": image_counters["mixed_"],
+                    "main_category": "Nincs fő kategória", "main_category_slug": "nincs-fo-kategoria",
+                    "sub_category_slug": sanitize_for_slug("Nincs alkategória"), "product_type": "Nincs terméktípus",
+                    "product_type_slug": sanitize_for_slug("Nincs terméktípus"), "is_gs_dependent": False,
+                    "is_sold": False, "needs_manual_category_review": True, "needs_upload": True
+                }
+                
+                json_path = new_product_dir / f"{product_id}.json"
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(new_product_json, f, indent=4, ensure_ascii=False)
+            
+            final_message = f"\nMigráció befejezve!\nNormál (adatbázisból): {processed_count} termék.\nÁrva (csak fájlrendszerből): {uncategorized_count} termék.\nKihagyva: {skipped_count} termék."
+            self.finished_signal.emit(final_message)
+        except Exception as e:
+            self.finished_signal.emit(f"\nKritikus hiba történt a migráció során: {e}")
+
+    def stop(self):
+        self.is_running = False
+
+# --- A Grafikus Felület ---
+
+class MigrationApp(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Régi Adatbázis Migráló Eszköz")
+        self.setMinimumSize(700, 500)
+        self.worker = None
+        self._setup_ui()
+        self._set_default_paths()
+        self._connect_signals()
+
+    def _setup_ui(self):
+        self.main_layout = QVBoxLayout(self)
+        form_layout = QFormLayout()
+        self.source_images_dir_edit, self.source_images_dir_btn = QLineEdit(), QPushButton("Tallózás...")
+        form_layout.addRow("Régi Képek Gyökérkönyvtára:", self._create_path_selector(self.source_images_dir_edit, self.source_images_dir_btn))
+        self.output_dir_edit, self.output_dir_btn = QLineEdit(), QPushButton("Tallózás...")
+        form_layout.addRow("Kimeneti Könyvtár:", self._create_path_selector(self.output_dir_edit, self.output_dir_btn))
+        self.upload_txt_edit, self.upload_txt_btn = QLineEdit(), QPushButton("Tallózás...")
+        form_layout.addRow("`upload.txt` Fájl:", self._create_path_selector(self.upload_txt_edit, self.upload_txt_btn))
+        self.main_layout.addLayout(form_layout)
+        self.start_button = QPushButton("Migráció Indítása")
+        self.start_button.setStyleSheet("font-size: 14px; padding: 10px; background-color: #4CAF50; color: white;")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False); self.progress_bar.setTextVisible(True); self.progress_bar.setFormat("%p%")
+        self.log_area = QTextEdit()
+        self.log_area.setReadOnly(True); self.log_area.setStyleSheet("background-color: #f0f0f0;")
+        self.main_layout.addWidget(self.start_button); self.main_layout.addWidget(self.progress_bar)
+        self.main_layout.addWidget(QLabel("Folyamatnapló:")); self.main_layout.addWidget(self.log_area)
+
+    def _create_path_selector(self, line_edit, button):
+        layout = QVBoxLayout(); layout.addWidget(line_edit)
+        layout.addWidget(button, alignment=Qt.AlignRight); container = QWidget()
+        container.setLayout(layout); return container
+
+    def _set_default_paths(self):
+        self.source_images_dir_edit.setText("D:/Munka/Bútor/ProductManager/ProductManager/ProductManager/DatFiles/Products")
+        self.output_dir_edit.setText("D:/Letöltések/pm_database_migrations")
+        self.upload_txt_edit.setText("D:/Munka/Bútor/ProductManager/ProductManager/ProductManager/DatFiles/upload.txt")
+
+    def _connect_signals(self):
+        self.source_images_dir_btn.clicked.connect(lambda: self._select_directory(self.source_images_dir_edit))
+        self.output_dir_btn.clicked.connect(lambda: self._select_directory(self.output_dir_edit))
+        self.upload_txt_btn.clicked.connect(lambda: self._select_file(self.upload_txt_edit))
+        self.start_button.clicked.connect(self._start_migration)
+        
+    def _select_directory(self, line_edit):
+        path = QFileDialog.getExistingDirectory(self, "Könyvtár kiválasztása", line_edit.text())
+        if path: line_edit.setText(path)
+            
+    def _select_file(self, line_edit):
+        path, _ = QFileDialog.getOpenFileName(self, "Fájl kiválasztása", line_edit.text(), "Szöveges fájlok (*.txt)")
+        if path: line_edit.setText(path)
+
+    def _log(self, message, level):
+        color = LOG_LEVELS.get(level, "black")
+        self.log_area.append(f'<span style="color: {color};">{message}</span>')
+
+    def _start_migration(self):
+        source_images_dir, output_dir, upload_txt_path = self.source_images_dir_edit.text(), self.output_dir_edit.text(), self.upload_txt_edit.text()
+        if not all([source_images_dir, output_dir, upload_txt_path]):
+            self._log("Hiba: Minden mezőt ki kell tölteni!", "ERROR"); return
+        self.start_button.setEnabled(False); self.start_button.setText("Migráció folyamatban...")
+        self.progress_bar.setVisible(True); self.progress_bar.setValue(0); self.log_area.clear()
+        self.worker = MigrationWorker(source_images_dir, output_dir, upload_txt_path)
+        self.worker.progress_signal.connect(self._log)
+        self.worker.finished_signal.connect(self._migration_finished)
+        self.worker.progress_value_signal.connect(self.progress_bar.setValue)
+        self.worker.start()
+
+    def _migration_finished(self, final_message):
+        self._log(final_message, "SUCCESS" if "befejezve" in final_message else "ERROR")
+        self.start_button.setEnabled(True); self.start_button.setText("Migráció Indítása")
+        self.worker = None
+
+    def closeEvent(self, event):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop(); self.worker.wait()
+        event.accept()
+
+# --- Az Alkalmazás Indítása ---
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MigrationApp()
+    window.show()
+    sys.exit(app.exec())
