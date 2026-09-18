@@ -20,6 +20,7 @@ UPLOAD_NEEDED_COLOR = QColor(255, 165, 0)
 FB_POSTED_COLOR = QColor(204, 255, 204) # Világoszöld
 FB_AD_CREATED_COLOR = QColor(204, 229, 255) # Világoskék
 JF_INACTIVE_COLOR = QColor(255, 228, 225)
+JF_ARCHIVED_COLOR = QColor(255, 180, 180) # Pirosas a Jófogás archívumhoz
 
 TEXT_COLOR_DARK_BACKGROUND = QColor(Qt.white)
 TEXT_COLOR_LIGHT_BACKGROUND = QColor(Qt.black)
@@ -99,8 +100,12 @@ class ProductTableAdapter:
             elif marking == "inactive_jf":
                 # Ellenőrizzük, hogy a pozíció None vagy 0
                 if product.jf_position is None or product.jf_position == 0:
-                    background_color = JF_INACTIVE_COLOR
-                    tooltip_text = "Megjelölve: Inaktív a Jófogáson (pozíció: 0 vagy nincs)."
+                    if product.additional_attributes.get("jofogas", {}).get("is_archived", False):
+                        background_color = JF_ARCHIVED_COLOR
+                        tooltip_text = "Megjelölve: Jófogás ARCHÍVUMBAN (törlés alatt) lévő termék (újraposztolás nem lehetséges!)."
+                    else:
+                        background_color = JF_INACTIVE_COLOR
+                        tooltip_text = "Megjelölve: Inaktív a Jófogáson (pozíció: 0 vagy nincs)."
                     is_marked = True
 
             # 2. Ha nincs jelölés, a normál állapotellenőrzés következik

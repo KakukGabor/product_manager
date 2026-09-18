@@ -87,6 +87,7 @@ class MarkDialog(QDialog):
         self.posted_fb_radio = QRadioButton("Posztolva (Facebook)")
         self.ad_created_fb_radio = QRadioButton("Hirdetés feladva (Facebook)")
         self.inactive_jf_radio = QRadioButton("Inaktív a Jófogáson")
+        self.inactive_jf_radio.setToolTip("Inaktív (világos rózsaszín) vagy Jófogás archívumban lévő (pirosas) termékek.")
 
         self.option_group.addButton(self.no_marking_radio)
         self.option_group.addButton(self.posted_fb_radio)

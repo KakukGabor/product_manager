@@ -281,9 +281,9 @@ class Product:
             'currency': processed_data.pop('currency', "HUF"),
             
             # KÉP DARABSZÁMLÁLÓK BETÖLTÉSE A JSON-BÓL
-            'num_original_images': data.get('num_original_images', 0), 
-            'num_transparent_images': data.get('num_transparent_images', 0), 
-            'num_mixed_images': data.get('num_mixed_images', 0), 
+            'num_original_images': processed_data.pop('num_original_images', 0), 
+            'num_transparent_images': processed_data.pop('num_transparent_images', 0), 
+            'num_mixed_images': processed_data.pop('num_mixed_images', 0), 
 
             'gs_watchers': processed_data.pop('gs_watchers', 0),
             'gs_views': processed_data.pop('gs_views', 0),

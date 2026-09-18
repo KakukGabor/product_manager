@@ -183,62 +183,6 @@ class FtpManager(QObject):
         finally:
             await self._disconnect_sftp_async()
 
-        async def _delete_product_from_ftp_async(self, product: Product) -> tuple[bool, str, str, bool]:
-            """
-            Biztonságosan, egy háttérszálon törli a termék mappáját az SFTP szerverről.
-            NEM bocsát ki jelet, hanem egy tuple-ben visszaadja az eredményt a hívónak.
-            Visszatérési érték: (siker, üzenet, operation_id, hiba_történt_e)
-            """
-            operation_id = f"delete_{product.id}"
-
-            def _sync_delete_worker() -> tuple[bool, str, bool]:
-                """Belső worker függvény, ami a blokkoló I/O műveletet végzi."""
-                sftp_conn = None
-                try:
-                    host = self.settings_manager.get_setting("server_settings.ftp_host")
-                    user = self.settings_manager.get_setting("server_settings.ftp_user")
-                    passwd = self.settings_manager.get_setting("server_settings.ftp_pass")
-                    port = self.settings_manager.get_setting("server_settings.ftp_port", 22)
-                    if not all([host, user, passwd]):
-                        raise ValueError("Hiányzó SFTP beállítások.")
-
-                    cnopts = pysftp.CnOpts(); cnopts.hostkeys = None
-                    sftp_conn = pysftp.Connection(host=host, username=user, password=passwd, port=port, cnopts=cnopts)
-                    
-                    remote_product_dir = self.product_manager._get_product_path_from_product_object(product)
-                    relative_path = remote_product_dir.relative_to(self.product_manager._base_product_dir)
-                    remote_path_str = str(Path("product_manager") / "product" / relative_path).replace('\\', '/')
-
-                    def _recursive_delete(path_to_delete: str):
-                        for item in sftp_conn.listdir_attr(path_to_delete):
-                            full_item_path = f"{path_to_delete}/{item.filename}"
-                            if stat.S_ISDIR(item.st_mode): _recursive_delete(full_item_path)
-                            else: sftp_conn.remove(full_item_path)
-                        sftp_conn.rmdir(path_to_delete)
-
-                    try:
-                        sftp_conn.listdir(remote_path_str)
-                        _recursive_delete(remote_path_str)
-                        msg = f"'{product.title}' sikeresen törölve az SFTP szerverről."
-                        return (True, msg, False)
-                    except IOError:
-                        msg = f"'{product.title}' nem található az SFTP-n, törlés sikeresnek tekintve."
-                        return (True, msg, False)
-                except Exception as e:
-                    msg = f"SFTP hiba a(z) '{product.title}' törlésekor: {e}"
-                    self._log(logging.ERROR, msg, exc_info=True, emit_status_signal=False)
-                    return (False, msg, True)
-                finally:
-                    if sftp_conn: sftp_conn.close()
-
-            try:
-                success, message, is_error = await asyncio.to_thread(_sync_delete_worker)
-                return success, message, operation_id, is_error
-            except Exception as e:
-                msg = f"Váratlan hiba a törlési szál indításakor: {e}"
-                self._log(logging.CRITICAL, msg, exc_info=True, emit_status_signal=False)
-                return False, msg, operation_id, True
-
     @Slot()
     def connect_ftp_slot(self):
         async def test_connection():

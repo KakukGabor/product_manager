@@ -127,6 +127,9 @@ class PlaywrightBrowserManager:
                 self._context.on("close", self._handle_context_closed)
                 self._context.on("page", self._handle_new_page)
 
+            # --- JAVÍTÁS: Zárjuk be a felesleges lapokat, amiket a böngésző visszaállított (előző munkamenetből) ---
+            await self.close_all_pages_async()
+
             page = await self._create_or_get_page(force_new=False)
         
             # --- KIEGÉSZÍTÉS: AZ ELSŐ LAPRA IS RÁKÖTJÜK A FIGYELŐT ---
@@ -249,17 +252,21 @@ class PlaywrightBrowserManager:
         """Biztonságos async visszaállítás."""
         return await asyncio.to_thread(self.window_controller.restore)
     
-    async def _on_page_navigated(self, page: Page):
-        """Callback, ami lefut, ha egy figyelt oldal 'load' eseménye bekövetkezik."""
-        # logger.debug(f"Navigáció észlelve a lapon. Új URL: {page.url}")
-        if self._on_navigation_callback:
-            self._on_navigation_callback(page.url)
+    async def _on_frame_navigated(self, frame):
+        """Callback, ami lefut, ha a fő frame navigál (SPA pushState is)."""
+        try:
+            # Csak a fő frame érdekel minket
+            if frame.page and frame == frame.page.main_frame:
+                if self._on_navigation_callback:
+                    self._on_navigation_callback(frame.url)
+        except Exception as e:
+            logger.warning(f"Hiba a navigáció lekezelésekor: {e}")
 
     async def _attach_navigation_listener_async(self, page: Page):
         if page and not page.is_closed():
-            # A 'self._on_page_navigated' egy async függvény, ezért a loop workerrel kell futtatni
-            # A lambda p=page trükk biztosítja, hogy a helyes 'page' objektum kerüljön átadásra
-            page.on('load', lambda p=page: asyncio.create_task(self._on_page_navigated(p)))
+            # A 'load' esemény nem veszi észre az SPA navigációkat (pl. React history.pushState).
+            # Ezért a 'framenavigated' eseményt használjuk, ami minden URL változásra reagál.
+            page.on('framenavigated', lambda f: asyncio.create_task(self._on_frame_navigated(f)))
 
 
     async def _handle_new_page(self, page: Page):

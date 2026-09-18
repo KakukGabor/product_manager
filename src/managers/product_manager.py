@@ -689,7 +689,6 @@ class ProductManager(QObject):
             html += "</ul>"
         
         return html
-
     @Slot(str, list, bool, str)
     def process_jf_extracted_products_slot(self, identifier: str, extracted_data: List[Dict[str, Any]], success: bool, message: str):
         if not success:
@@ -705,6 +704,8 @@ class ProductManager(QObject):
         total_items_on_jofogas = len(extracted_data)
         expires_in_75 = 0; expires_in_50 = 0; expires_in_15 = 0
         for ad_data in extracted_data:
+            if ad_data.get("is_archived", False):
+                continue
             try:
                 days = ad_data.get("expires_in_days")
                 if isinstance(days, int):
@@ -727,6 +728,7 @@ class ProductManager(QObject):
 
             cleaned_ad_name = clean_jofogas_name(ad_name_raw)
             ad_price = ad_data.get("price_numeric", -1.0)
+            is_archived = ad_data.get("is_archived", False)
 
             found_product: Optional[Product] = None
             for product in self._products.values():
@@ -739,7 +741,8 @@ class ProductManager(QObject):
                 updated = False
                 
                 # 1. Pozíció frissítése a fő objektumon
-                new_position = ad_data.get("position")
+                # Ha archivált, akkor nincs aktív pozíciója
+                new_position = None if is_archived else ad_data.get("position")
                 if found_product.jf_position != new_position:
                     found_product.jf_position = new_position
                     updated = True
@@ -757,6 +760,10 @@ class ProductManager(QObject):
                     jf_attributes["expires_in_days"] = new_expires
                     updated = True
 
+                if jf_attributes.get("is_archived", False) != is_archived:
+                    jf_attributes["is_archived"] = is_archived
+                    updated = True
+
                 if "position" in jf_attributes:
                     del jf_attributes["position"]
 
@@ -764,21 +771,27 @@ class ProductManager(QObject):
                     found_product.additional_attributes["jofogas"] = jf_attributes
                     self.add_or_update_product_sync(found_product, run_filter_and_emit=False)
                     products_processed_in_this_batch.append(found_product)
-                    self._log(logging.DEBUG, f"Jófogás adatok frissítve: '{found_product.title}'")
+                    self._log(logging.DEBUG, f"Jófogás adatok frissítve: '{found_product.title}' (archív: {is_archived})")
 
-        # --- Listáról lekerült termékek pozíciójának nullázása ---
+        # --- Listáról lekerült termékek pozíciójának és archív státuszának nullázása ---
         for product in self._products.values():
-            if product.jf_position is not None and product.id not in found_product_ids_in_scrape:
+            has_jf_data = product.jf_position is not None or product.additional_attributes.get("jofogas", {}).get("is_archived", False)
+            if has_jf_data and product.id not in found_product_ids_in_scrape:
                 product.jf_position = None
+                jf_attributes = product.additional_attributes.get("jofogas", {})
+                if "is_archived" in jf_attributes:
+                    jf_attributes["is_archived"] = False
+                product.additional_attributes["jofogas"] = jf_attributes
+                
                 self.add_or_update_product_sync(product, run_filter_and_emit=False)
                 products_processed_in_this_batch.append(product)
-                self._log(logging.INFO, f"'{product.title}' lekerült a Jófogásról, pozíció nullázva.")
+                self._log(logging.INFO, f"'{product.title}' lekerült a Jófogásról (vagy törlődött az archívból), pozíció és archív státusz nullázva.")
 
         # --- Riport generálása és jelek kibocsátása ---
         jofogas_ad_tuples = {(clean_jofogas_name(ad['name']), ad.get('price_numeric', -1.0)) for ad in extracted_data if 'name' in ad}
         missing_gs_products = [p for p in self._products.values() if p.is_gs_dependent and not p.is_sold and (p.title.strip().lower(), p.price_numeric) not in jofogas_ad_tuples]
 
-        report_html = self._generate_jf_report_html(total_items_on_jofogas, expires_in_75, expires_in_50, expires_in_15, missing_gs_products)
+        report_html = self._generate_jf_report_html(total_items_on_jofogas, expires_in_75, expires_in_50, expires_in_15, missing_gs_products, extracted_data)
         self.jfProcessingReportReady.emit(report_html)
         
         self._apply_filters_internal()
@@ -788,7 +801,7 @@ class ProductManager(QObject):
         else:
             self._log(logging.INFO, "Jófogás adatfeldolgozás befejezve, nem történt termékfrissítés.")
 
-    def _generate_jf_report_html(self, total_count: int, expires_75: int, expires_50: int, expires_15: int, missing_products: List[Product]) -> str:
+    def _generate_jf_report_html(self, total_count: int, expires_75: int, expires_50: int, expires_15: int, missing_products: List[Product], extracted_data: List[Dict[str, Any]]) -> str:
         """Összeállít egy HTML formátumú jelentést a Jófogás feldolgozás eredményeiről."""
         timestamp = datetime.now().strftime("%Y. %m. %d. %H:%M:%S")
         
@@ -799,13 +812,50 @@ class ProductManager(QObject):
         html += f"<h2>Összegzés</h2>"
         html += f"<p><b>Hirdetések száma a Jófogáson összesen:</b> {total_count} db</p>"
 
-        html += f"<h2>Lejárati Kategóriák</h2>"
+        # Kiszámoljuk az aktív és archivált darabszámokat
+        archived_ads = [ad for ad in extracted_data if ad.get("is_archived", False)]
+        active_count = total_count - len(archived_ads)
+        html += f"<p><b>Ebből aktív hirdetés:</b> {active_count} db</p>"
+        html += f"<p><b>Ebből archivált (törlés alatt álló) hirdetés:</b> {len(archived_ads)} db</p>"
+
+        html += f"<h2>Lejárati Kategóriák (Aktív Hirdetések)</h2>"
         html += "<ul>"
         html += f"<li><b>75 napon belül lejár:</b> {expires_75} db</li>"
         html += f"<li><b>50 napon belül lejár:</b> {expires_50} db</li>"
         html += f"<li><b>15 napon belül lejár:</b> {expires_15} db</li>"
         html += "</ul>"
 
+        # --- Archivált termékek táblázata ---
+        html += f"<h2>Archivált (Törlés Alatt) Termékek</h2>"
+        if archived_ads:
+            html += "<p>Az alábbi hirdetések szerepelnek a Jófogás archívumában, így nem tölthetők újra a lejáratig:</p>"
+            html += "<table border='1' cellpadding='5' style='border-collapse: collapse; width: 100%;'>"
+            html += "<tr style='background-color: #fdd; font-weight: bold;'><th>Párosított ID</th><th>Név</th><th>Ár</th><th>Megtekintések</th></tr>"
+            
+            def clean_jofogas_name(raw_name: str) -> str:
+                parts = raw_name.strip().split(' - ', 1)
+                return (parts[1] if len(parts) > 1 else parts[0]).strip().lower()
+
+            for ad in sorted(archived_ads, key=lambda a: a.get('name', '')):
+                cleaned_ad_name = clean_jofogas_name(ad.get('name', ''))
+                ad_price = ad.get('price_numeric', -1.0)
+                
+                local_prod = None
+                for product in self._products.values():
+                    if not product.is_sold and (product.title.strip().lower() == cleaned_ad_name and abs(product.price_numeric - ad_price) < 0.01):
+                        local_prod = product
+                        break
+                
+                prod_id_str = local_prod.id if local_prod else "<i>Nem párosított</i>"
+                price_str = f"{int(ad_price):,} Ft".replace(',', ' ') if ad_price > 0 else "N/A"
+                views_str = str(ad.get('views', 'N/A'))
+                
+                html += f"<tr><td>{prod_id_str}</td><td>{ad.get('name', '')}</td><td>{price_str}</td><td>{views_str}</td></tr>"
+            html += "</table>"
+        else:
+            html += "<p><i>(Nincs archivált hirdetés a Jófogáson.)</i></p>"
+
+        # --- Hiányzó termékek táblázata ---
         html += f"<h2>Hiányzó GS-Függő Termékek</h2>"
         html += f"<p>Az alábbi {len(missing_products)} GS-függő termék nem található meg a Jófogás hirdetések között:</p>"
 
@@ -820,8 +870,6 @@ class ProductManager(QObject):
             html += "<p><i>(Nincs hiányzó termék.)</i></p>"
 
         return html
-
-    # --- Szűrés ---
 
     def _apply_filters_internal(self):
         is_sold_filter_active = self._current_filters.get("is_sold", False)
@@ -1262,6 +1310,7 @@ class ProductManager(QObject):
                 <th>Létrehozva</th>
                 <th>Eladva?</th>
                 <th>Feltöltendő?</th>
+                <th>Jófogáson inaktív?</th>
                 <th title='Eredeti képek száma'>Orig.</th>
                 <th title='Transzparens képek száma'>Trans.</th>
                 <th title='Szerkesztett (feltöltendő) képek száma'>Mixed</th>
@@ -1273,6 +1322,14 @@ class ProductManager(QObject):
             created_str = product.created_at.strftime("%Y-%m-%d %H:%M") if product.created_at else "N/A"
             is_sold_str = "<span style='color: red; font-weight: bold;'>Igen</span>" if product.is_sold else "Nem"
             needs_upload_str = "<span style='color: red;'>Igen</span>" if product.needs_upload else "Nem"
+            
+            is_jf_archived = product.additional_attributes.get("jofogas", {}).get("is_archived", False)
+            is_jf_inactive = product.jf_position is None or product.jf_position == 0
+            if is_jf_archived:
+                jf_inactive_str = "<span style='color: darkred; font-weight: bold;'>Igen (Archivált)</span>"
+            else:
+                jf_inactive_str = "<span style='color: red;'>Igen</span>" if is_jf_inactive else f"Nem (pozíció: {product.jf_position})"
+            
             sub_cat_name = next((name for name, slug in self.category_manager.get_sub_categories_with_slugs_for_main(product.main_category) if slug == product.sub_category_slug), product.sub_category_slug)
 
             # --- MÓDOSÍTÁS: A stílusdefiníciók frissítése a kérés alapján ---
@@ -1298,6 +1355,7 @@ class ProductManager(QObject):
             html += f"<td>{created_str}</td>"
             html += f"<td>{is_sold_str}</td>"
             html += f"<td>{needs_upload_str}</td>"
+            html += f"<td>{jf_inactive_str}</td>"
             
             # --- MÓDOSÍTÁS: A frissített stílusok alkalmazása a cellákon ---
             html += f"<td align='center'{original_style}>{product.num_original_images}</td>"

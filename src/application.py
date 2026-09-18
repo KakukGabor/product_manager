@@ -9,7 +9,6 @@ from managers.settings_manager import SettingsManager
 from managers.resource_manager import ResourceManager
 from gui.main_window import MainWindow
 from automation.playwright_automator import PlaywrightAutomator
-from managers.ai_manager import AIManager
 from managers.product_category_manager import ProductCategoryManager
 from managers.product_manager import ProductManager
 from automation.sites.gs_automator import GaleriaSavariaAutomator
@@ -46,6 +45,10 @@ class Application:
         self._load_translations()
 
         self._shared_memory = QSharedMemory(self.SHARED_MEMORY_KEY)
+        if self._shared_memory.attach():
+            # Ha az előző leállás nem volt tiszta, először lecsatoljuk
+            self._shared_memory.detach()
+            
         if not self._shared_memory.create(1):
             sys.exit(1)
         self._app.aboutToQuit.connect(self._release_shared_memory)
@@ -88,11 +91,6 @@ class Application:
             product_manager=self._product_manager
         )
 
-        self._ai_manager = AIManager(
-            settings_manager=self._settings_manager,
-            loop_worker=self._playwright_automator.loop_worker
-        )
-
         self._email_manager = EmailManager(
             settings_manager=self._settings_manager,
             loop_worker=self._playwright_automator.loop_worker
@@ -110,7 +108,6 @@ class Application:
             gs_automator=self._gs_automator,
             jf_automator=self._jofogas_automator,
             fb_automator=self._fb_automator,  # <-- EZT A SORT KELL BETENNED!
-            ai_manager=self._ai_manager,
             ftp_manager=self._ftp_manager,
             email_manager=self._email_manager,
             text_editor_controller=self._text_editor_controller

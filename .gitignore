@@ -7,3 +7,6 @@ venv/
 
 # Minden, ami az app_data_storage mappában van
 app_data_storage/
+
+# Biztonsági mentések
+_saves_/

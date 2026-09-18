@@ -69,36 +69,20 @@ class GaleriaSavariaAutomator(QObject):
         self.core_automator.emit_status_update(message, level, color)
 
     async def _get_or_create_gs_page_async(self, force_new: bool = False) -> Optional[Page]:
-        browser_context = self.core_automator.browser_manager._context
-        
-        if not browser_context:
+        page = await self.core_automator.browser_manager._create_or_get_page(force_new=force_new)
+        if not page:
             self._log(logging.ERROR, "Nincs aktív böngésző kontextus a Galéria Savaria oldalhoz. Kérjük indítsa el a böngészőt.")
             return None
-
-        if force_new and self._gs_page and not self._gs_page.is_closed():
-            await self._gs_page.close()
-            self._gs_page = None
-
-        if self._gs_page is None or self._gs_page.is_closed():
-            try:
-                self._gs_page = await browser_context.new_page()
-            except Exception as e:
-                self._log(logging.ERROR, f"Hiba az új GS lap létrehozásakor: {e}")
-                return None
-
-            screen = QApplication.primaryScreen()
-            if screen:
-                screen_geom = screen.availableGeometry()
-                await self._gs_page.set_viewport_size({"width": screen_geom.width(), "height": screen_geom.height()})
-                
-        return self._gs_page
+        self._gs_page = page
+        return page
 
 
     
     async def _run_galeria_savaria_flow_async(self):
         default_navigation_timeout = self.settings_manager.get_setting("browser_settings.default_navigation_timeout_ms", 30000)
 
-        self._gs_page = await self._get_or_create_gs_page_async(force_new=True)
+        await self.core_automator.browser_manager.close_all_pages_async()
+        self._gs_page = await self._get_or_create_gs_page_async(force_new=False)
         if not self._gs_page:
             self.gsFlowFinished.emit(False, "Nem sikerült megnyitni a böngészőt vagy a lapot a Galéria Savaria-hoz.")
             return
@@ -127,8 +111,9 @@ class GaleriaSavariaAutomator(QObject):
                 self.gsFormFillingFinished.emit(False, message, product_data)
                 return
 
+            await self.core_automator.browser_manager.close_all_pages_async()
             # 2. GS oldal objektum lekérése vagy létrehozása
-            self._gs_page = await self._get_or_create_gs_page_async(force_new=True)
+            self._gs_page = await self._get_or_create_gs_page_async(force_new=False)
             if not self._gs_page:
                 message = "Nem sikerült megnyitni a böngészőt vagy a lapot a Galéria Savaria új termék feltöltéshez."
                 self._log(logging.ERROR, message)
@@ -163,8 +148,6 @@ class GaleriaSavariaAutomator(QObject):
             )
             
             success, message = await form_filler.fill_form(product_data)
-            if not self.settings_manager.get_setting("browser_settings.headless", False):
-                await self.core_automator.browser_manager.restore_window()
 
         except Exception as e:
             success = False

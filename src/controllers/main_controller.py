@@ -6,8 +6,12 @@ from typing import Optional, Dict, List, Callable, Coroutine
 from PySide6.QtCore import QObject, Signal, Slot, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
+try:
+    import winsound
+except ImportError:
+    winsound = None
+
 from automation.playwright_automator import PlaywrightAutomator
-from managers.ai_manager import AIManager
 from managers.product_manager import ProductManager
 from automation.sites.gs_automator import GaleriaSavariaAutomator
 from automation.sites.jofogas_automator import JofogasAutomator
@@ -40,7 +44,6 @@ class MainController(QObject):
     def __init__(self, playwright_automator: PlaywrightAutomator, product_manager: ProductManager,
                   gs_automator: GaleriaSavariaAutomator, jf_automator: JofogasAutomator,
                   fb_automator: FacebookAutomator,
-                  ai_manager: AIManager, 
                   ftp_manager: FtpManager, 
                   email_manager: EmailManager,
                   text_editor_controller: TextEditorController,
@@ -53,7 +56,6 @@ class MainController(QObject):
         self.gs_automator = gs_automator
         self.jofogas_automator = jf_automator
         self.fb_automator = fb_automator
-        self.ai_manager = ai_manager
         self.ftp_manager = ftp_manager
         self.email_manager = email_manager
         self.text_editor_controller = text_editor_controller
@@ -73,6 +75,8 @@ class MainController(QObject):
         self._pending_gs_validation_product: Optional[Product] = None
         self._jofogas_deletion_task: Optional[asyncio.Task] = None
         self._currently_watched_product_id: Optional[str] = None
+        self._last_jf_upload_product_id: Optional[str] = None
+        self._jf_form_visited = False
         self._database_check_dialog: Optional[DatabaseCheckDialog] = None
         self._upload_database_dialog: Optional[UploadDatabaseDialog] = None
         self._description_format_dialog: Optional[DescriptionFormatDialog] = None
@@ -82,9 +86,6 @@ class MainController(QObject):
         self.playwright_automator.browserManuallyClosed.connect(self._handle_browser_manually_closed)
         self.playwright_automator.statusUpdated.connect(self.updateStatusBar)
         self.playwright_automator.automationFinished.connect(self._handle_automation_finished)
-
-        self.ai_manager.statusUpdated.connect(self.updateStatusBar)
-        self.ai_manager.descriptionGenerated.connect(self._handle_ai_description_generated)
 
         self.ftp_manager.statusUpdated.connect(self.updateStatusBar)
         self.ftp_manager.connectionStateChanged.connect(self._handle_ftp_connection_state_changed)
@@ -102,6 +103,7 @@ class MainController(QObject):
         self.product_manager.jfProcessingReportReady.connect(self._handle_jf_report)
         self.gs_automator.gsFormFillingFinished.connect(self._handle_gs_form_filling_finished)
         self.gs_automator.gsProductValidationFinished.connect(self._handle_gs_product_validation_finished)
+        self.jofogas_automator.jfFormFillingFinished.connect(self._handle_jf_form_filling_finished)
         self.playwright_automator.newPageOpened.connect(self._handle_new_browser_page)
         self.playwright_automator.pageNavigated.connect(self._handle_page_navigation)
         self.gs_automator.gsSemiAutoLocateFinished.connect(self._handle_gs_product_semi_auto_locate_finished)
@@ -127,6 +129,7 @@ class MainController(QObject):
         self._product_detail_widget.productPermanentlyDeleted.connect(self.product_manager.delete_product_permanently_sync)
         self._product_detail_widget.gsNewProductFillRequested.connect(self.gs_automator.run_gs_new_product_fill_flow)
         self._product_detail_widget.jfNewProductFillRequested.connect(self.jofogas_automator.run_jf_new_product_fill_flow)
+        self._product_detail_widget.jfNewProductFillRequested.connect(self._track_jf_upload)
         self._product_detail_widget.gsNewProductValidateRequested.connect(self._handle_gs_validation_request)
         self._product_detail_widget.removeFromMarketsRequested.connect(self._handle_remove_from_markets_request)
         self._product_detail_widget.refreshJofogasAdRequested.connect(self._handle_refresh_jofogas_ad_request)
@@ -134,6 +137,13 @@ class MainController(QObject):
         self._product_detail_widget.detailToolbar.buttonClicked.connect(self._handle_detail_toolbar_click)
         self._product_detail_widget.productExportRequested.connect(self.handle_product_export_request)
         self._product_detail_widget.fbPostRequested.connect(self.fb_automator.start_fb_post_flow)
+
+    @Slot(dict)
+    def _track_jf_upload(self, data: dict):
+        """Nyomon követi, hogy éppen melyik termék Jófogás feltöltése indult el."""
+        self._last_jf_upload_product_id = data.get("id") or "NEW_UNSAVED_PRODUCT"
+        self._jf_form_visited = False
+        logger.info(f"Jófogás feltöltés követése aktiválva: {self._last_jf_upload_product_id}")
 
     def set_filter_dialog(self, dialog: FilterDialog):
         self._filter_dialog = dialog
@@ -247,6 +257,11 @@ class MainController(QObject):
     @Slot(bool, str)
     def _handle_automation_finished(self, success: bool, message: str):
         logger.debug(f"Automatizálási feladat befejeződött. Siker: {success}, Üzenet: {message}")
+        
+        if not success and self._last_jf_upload_product_id:
+            logger.info(f"Automatizációs hiba történt, Jófogás siker-figyelő leállítva. ({message})")
+            self._last_jf_upload_product_id = None
+            self._jf_form_visited = False
 
     @Slot()
     def start_gs_data_extraction(self):
@@ -279,17 +294,8 @@ class MainController(QObject):
 
     @Slot()
     def handle_generate_description_click(self):
-        example_product = "Restaurált Alt Deutsch tálalószekrény"
-        self.updateStatusBar.emit(f"AI: Leírás generálása ehhez: '{example_product}'...", logging.INFO, "blue")
-        self.ai_manager.generate_description(example_product)
-
-    @Slot(str, bool, str)
-    def _handle_ai_description_generated(self, description: str, success: bool, message: str):
-        if success:
-            logger.info(f"AI által generált leírás:\n---\n{description}\n---")
-            self.updateStatusBar.emit(message, logging.INFO, "green")
-        else:
-            self.updateStatusBar.emit(message, logging.ERROR, "red")
+        self.updateStatusBar.emit("Az AI funkció jelenleg nem elérhető.", logging.WARNING, "orange")
+        QMessageBox.information(None, "Információ", "Az AI leírás generáló funkció jelenleg ki lett kapcsolva / nem elérhető.")
 
     @Slot(Product, bool, str)
     def _handle_product_added(self, product: Product, success: bool, message: str):
@@ -649,9 +655,34 @@ class MainController(QObject):
     @Slot(bool, str, dict)
     def _handle_gs_form_filling_finished(self, success: bool, message: str, product_data: dict):
         logger.info(f"GS űrlapkitöltés befejeződött. Siker: {success}. Üzenet: {message}")
+        if not success:
+            if winsound:
+                winsound.MessageBeep(winsound.MB_ICONHAND)
+            else:
+                QApplication.beep()
+        else:
+            QApplication.beep()
         if self._product_detail_widget:
             new_state = NewGsProductState.FORM_FILLED if success else NewGsProductState.IDLE
             self._product_detail_widget.set_gs_new_product_state(new_state, message)
+
+    @Slot(bool, str, dict)
+    def _handle_jf_form_filling_finished(self, success: bool, message: str, product_data: dict):
+        logger.info(f"Jófogás űrlapkitöltés befejeződött. Siker: {success}. Üzenet: {message}")
+        if not success:
+            if winsound:
+                winsound.MessageBeep(winsound.MB_ICONHAND)
+            else:
+                QApplication.beep()
+            if self._last_jf_upload_product_id:
+                logger.info(f"Automatizációs hiba történt, Jófogás siker-figyelő leállítva. ({message})")
+                self._last_jf_upload_product_id = None
+                self._jf_form_visited = False
+        else:
+            QApplication.beep()
+                
+        if self._product_detail_widget:
+            self._product_detail_widget.update_toolbar_state()
 
     @Slot(Product)
     def _handle_gs_validation_request(self, product_to_validate: Product):
@@ -676,6 +707,8 @@ class MainController(QObject):
             
             # 3. Böngésző minimalizálása
             self.playwright_automator.minimize_browser()
+            # 3. Böngésző bezárása (minimalizálás helyett)
+            QTimer.singleShot(500, self.playwright_automator.manual_close_browser)
 
             if self._image_gallery_widget:
                 # 4. Ideiglenes képek törlése
@@ -915,28 +948,62 @@ class MainController(QObject):
                     self._product_detail_widget.set_gs_new_product_state(NewGsProductState.FORM_FILLED, "Hiba az adatokban.")
 
         # === A JÓFOGÁS SIKER URL ELLENŐRZÉSE - DINAMIKUS MÓDSZERREL ===
-        # 1. Beolvassuk a teljes URL-t a beállításokból
-        full_confirm_url = self.playwright_automator.settings_manager.get_setting("site_configs.jofogas.upload_success_url")
+        if self._last_jf_upload_product_id and "jofogas.hu" in url:
+            # 1. Szigorú kizárás: Ha az űrlapon (form) vagyunk, az sosem a siker oldal!
+            if "form" in url.lower():
+                self._jf_form_visited = True  # Regisztráljuk, hogy ténylegesen elindult az adatkitöltés
+                return
+                
+            # 2. Ha az indítás óta nem is jártunk az űrlapon, akkor ez egy korábbi munkamenetből visszaállított lap!
+            if not getattr(self, "_jf_form_visited", False):
+                return
 
-        # 2. Ellenőrizzük, hogy van-e beállított URL
-        if full_confirm_url:
             try:
-                # 3. Levágjuk a változó részt (az utolsó '/' utáni karaktereket)
-                # Az rfind('/') megkeresi az utolsó perjelet, és +1-gyel adjuk hozzá, hogy a perjel is benne maradjon.
-                last_slash_index = full_confirm_url.rfind('/')
-                if last_slash_index > 8: # Biztosítjuk, hogy a "https://" utáni perjelet találjuk meg
-                    base_confirm_url = full_confirm_url[:last_slash_index + 1]
-
-                    # 4. Az így kapott "alap" URL-lel hasonlítjuk össze a böngésző aktuális címét
-                    if url.startswith(base_confirm_url):
-                        logger.info(f"Sikeres Jófogás termékfeladás észlelve (URL: {url}). A pozíciók frissítése elindítva.")
+                is_match = False
+                url_lower = url.lower()
+                
+                # 2. Intelligens felismerő: Ha az URL-ben "confirm" (vagy siker szó) van, ÉS a folyamat végén járunk (/ai/)
+                if "/ai/" in url_lower:
+                    success_keywords = ["siker", "success", "finish", "confirm"]
+                    if any(keyword in url_lower for keyword in success_keywords):
+                        logger.info(f"Sikeres feltöltés azonosítva a kulcsszavak alapján: {url}")
+                        is_match = True
                         
-                        # A további logika változatlan
-                        self.product_manager.increment_all_jofogas_positions_sync()
-                        self.updateStatusBar.emit("Jófogás feltöltés sikeres, a pozíciók frissítve.", logging.INFO, "green")
-                        self.playwright_automator.minimize_browser()
+                # 3. Biztonságos fallback egyedi URL beállítás esetén (csak pontos egyezés!)
+                if not is_match:
+                    full_confirm_url = self.playwright_automator.settings_manager.get_setting("site_configs.jofogas.upload_success_url", "")
+                    if full_confirm_url and len(full_confirm_url) > 15:
+                        clean_confirm_url = full_confirm_url.split('?')[0].rstrip('/')
+                        clean_current_url = url.split('?')[0].rstrip('/')
+                        if clean_current_url == clean_confirm_url:
+                            is_match = True
+
+                if is_match:
+                    logger.info(f"Sikeres Jófogás termékfeladás észlelve (URL: {url}). A pozíciók frissítése elindítva.")
+                    
+                    self.product_manager.increment_all_jofogas_positions_sync()
+                    self.updateStatusBar.emit("Jófogás feltöltés sikeres, a pozíciók frissítve.", logging.INFO, "green")
+                    
+                    # --- Új termék Inaktív jelölésének levétele ---
+                    product_id = self._last_jf_upload_product_id
+                    product = None
+                    if product_id and product_id != "NEW_UNSAVED_PRODUCT":
+                        product = self.product_manager.get_product_by_id(product_id)
+                    if not product and self._product_detail_widget and self._product_detail_widget._current_product:
+                        product = self._product_detail_widget._current_product
+                        
+                    if product:
+                        product.jf_position = 1
+                        self.product_manager.add_or_update_product_sync(product)
+                        logger.info(f"'{product.title}' Jófogás pozíciója 1-re állítva a sikeres feltöltés miatt.")
+                    
+                    self._last_jf_upload_product_id = None
+                    self._jf_form_visited = False
+                    
+                    # Fél másodperc múlva böngésző bezárása
+                    QTimer.singleShot(500, self.playwright_automator.manual_close_browser)
+                    
             except Exception as e:
-                # Hibakezelés, ha valamiért a string-művelet hibára futna
                 logger.error(f"Hiba a Jófogás siker URL feldolgozása közben: {e}")
             
     @Slot(str)
@@ -1002,23 +1069,6 @@ class MainController(QObject):
 
         except Exception as e:
             return (False, f"Hiba az eladási folyamat során: {e}", f"delete_{product.id}", True)
-
-        def on_ftp_sold_finished(fut: asyncio.Future):
-            try:
-                success, message, operation_id, is_error = fut.result()
-
-                if operation_id != f"delete_{product.id}":
-                    return
-                
-                if success and not is_error:
-                    self.product_manager.mark_product_as_sold_sync(product.id)
-                    self.updateStatusBar.emit(f"'{product.title}' eladva és a szerverről eltávolítva.", logging.INFO, "green")
-                else:
-                    self.updateStatusBar.emit(f"Hiba a(z) '{product.title}' szerverről való törlésekor. A helyi állapot nem változott.", logging.ERROR, "red")
-            except Exception as e:
-                self.updateStatusBar.emit(f"Kritikus hiba az eladási folyamat során: {e}", logging.CRITICAL, "red")
-
-        future.add_done_callback(on_ftp_sold_finished)            
 
     @Slot()
     def handle_database_check_request(self):

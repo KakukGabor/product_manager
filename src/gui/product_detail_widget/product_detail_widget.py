@@ -39,6 +39,7 @@ class ProductDetailWidget(QWidget):
     productPermanentlyDeleted = Signal(str)
     removeFromMarketsRequested = Signal()
     refreshJofogasAdRequested = Signal()
+    jfRefreshFlowRequested = Signal(Product, dict)
     descriptionFormatRequested = Signal()
     productExportRequested = Signal(str)
     fbPostRequested = Signal(object)
@@ -533,17 +534,38 @@ class ProductDetailWidget(QWidget):
         
         # Facebook adatlap mezőinek feltöltése
         fb_data = product.facebook_data
+
+        # --- Hashtag automatikus generálása ---
+        default_hashtags = "#antik #bútor #régiség #restaurált #felújított #lakberendezés #otthondekor #egyedibútor #antikvitás #historizáló"
+        
+        sub_category_name = next((name for name, slug in self.category_manager.get_sub_categories_with_slugs_for_main(product.main_category) if slug == product.sub_category_slug), "")
+        product_type_name = ""
+        if sub_category_name:
+            all_product_types = self.category_manager.get_product_types_for_sub(product.main_category, sub_category_name)
+            product_type_name = next((name for name in all_product_types if _sanitize_for_slug(name) == product.product_type_slug), "")
+            
+        cat_tag = ""
+        if product_type_name and product_type_name.lower() != "nincs terméktípus":
+            clean_name = "".join(c for c in product_type_name if c.isalnum()).lower()
+            cat_tag = f" #{clean_name}"
+        elif sub_category_name and sub_category_name.lower() != "nincs alkategória":
+            clean_name = "".join(c for c in sub_category_name if c.isalnum()).lower()
+            cat_tag = f" #{clean_name}"
+            
+        generated_hashtags = default_hashtags + cat_tag
+        # --------------------------------------
+
         if fb_data:
             self.fb_post_text_edit.setPlainText(fb_data.post_text or "")
             self.fb_ad_text_edit.setPlainText(fb_data.ad_text or "")
-            self.fb_hashtags_edit.setText(fb_data.hashtags or "")
+            self.fb_hashtags_edit.setText(fb_data.hashtags if (fb_data.hashtags and fb_data.hashtags.strip()) else generated_hashtags)
             self.fb_is_posted_checkbox.setChecked(fb_data.is_posted)
             self.fb_is_ad_created_checkbox.setChecked(fb_data.is_ad_created)
             self.fb_post_url_edit.setText(fb_data.post_url or "")
         else:
             self.fb_post_text_edit.clear()
             self.fb_ad_text_edit.clear()
-            self.fb_hashtags_edit.clear()
+            self.fb_hashtags_edit.setText(generated_hashtags)
             self.fb_post_url_edit.clear()
             self.fb_is_posted_checkbox.setChecked(False)
             self.fb_is_ad_created_checkbox.setChecked(False)
@@ -885,6 +907,7 @@ class ProductDetailWidget(QWidget):
                 # ESET 2: Meglévő termék ("frissítés")
                 dialog_title = "Jófogás hirdetés újrafeladása"
                 dialog_text = f"A Jófogáson a frissítés egy 'törlés és újra feladás' folyamat.\n\nBiztosan elindítja a(z) '{self._current_product.title}' hirdetés újrafeladását?"
+                dialog_text = f"A Jófogáson a frissítés egy 'törlés és újra feladás' folyamat.\n\nA program először megkeresi a régi hirdetést a böngészőben. Amint Ön rákattint a törlésre, a szoftver automatikusan újra feltölti a terméket a legfrissebb adatokkal!\n\nBiztosan elindítja a folyamatot?"
                 
                 # ### JAVÍTÁS: Ellenőrzés 'original_' képekre a termék objektumon ###
                 if self._current_product.num_original_images == 0:
@@ -921,6 +944,7 @@ class ProductDetailWidget(QWidget):
 
             # Indítás (csak ha 'Igen'-t nyomtak)
             self.jfNewProductFillRequested.emit(prepared_data)
+            self.jfRefreshFlowRequested.emit(self._current_product, prepared_data)
             
             # Vizuális visszajelzés
             jf_button_item = self.detailToolbar.get_item_by_id("refresh_jf_product_btn")

@@ -27,7 +27,7 @@
         "headless": false,
         "browser_type": "chromium",
         "auto_accept_cookies": true,
-        "default_navigation_timeout_ms": 8000,
+        "default_navigation_timeout_ms": 20000,
         "element_visibility_timeout_ms": 6000,
         "browser_close_timeout_s": 5,
         "post_action_delay_ms": 600,
@@ -42,6 +42,7 @@
         "jofogas": {
             "button_target_url": "https://www.jofogas.hu/",
             "products_url": "https://www.jofogas.hu/fiok/hirdeteseim",
+            "archived_products_url": "https://www.jofogas.hu/fiok/hirdeteseim/archivalt-torles-alatt",
             "new_product_url": "https://www2.jofogas.hu/ai/form/1",
             "upload_success_url": "https://www2.jofogas.hu/ai/confirm/0"
         },
@@ -59,9 +60,9 @@
     },
     "text_editor_settings": {
         "geometry": [
-            207,
-            79,
-            910,
+            103,
+            88,
+            1082,
             600
         ],
         "toolbar_button_order": [],

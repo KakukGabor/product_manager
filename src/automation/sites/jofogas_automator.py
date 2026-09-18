@@ -54,27 +54,12 @@ class JofogasAutomator(QObject):
 
 
     async def _get_or_create_jf_page_async(self, force_new: bool = False) -> Optional[Page]:
-        browser_context = self.core_automator.browser_manager._context
-        if not browser_context:
+        page = await self.core_automator.browser_manager._create_or_get_page(force_new=force_new)
+        if not page:
             self._log(logging.ERROR, "Nincs aktív böngésző kontextus a Jófogás oldalhoz.", color_override="red")
             return None
-
-        if force_new and self._jf_page and not self._jf_page.is_closed():
-            await self._jf_page.close()
-            self._jf_page = None
-
-        if self._jf_page is None or self._jf_page.is_closed():
-            try:
-                self._jf_page = await browser_context.new_page()
-            except Exception as e:
-                self._log(logging.ERROR, f"Hiba az új Jófogás lap létrehozásakor: {e}", color_override="red")
-                return None
-
-            screen = QApplication.primaryScreen()
-            if screen:
-                screen_geom = screen.availableGeometry()
-                await self._jf_page.set_viewport_size({"width": screen_geom.width(), "height": screen_geom.height()})
-        return self._jf_page
+        self._jf_page = page
+        return page
 
 
     async def _run_jofogas_flow_async(self):
@@ -86,7 +71,8 @@ class JofogasAutomator(QObject):
                 self.jfFlowFinished.emit(False, "Nem sikerült elindítani a böngészőt a Jófogás adatgyűjtéshez.")
                 return
 
-        self._jf_page = await self._get_or_create_jf_page_async(force_new=True)
+        await self.core_automator.browser_manager.close_all_pages_async()
+        self._jf_page = await self._get_or_create_jf_page_async(force_new=False)
         if not self._jf_page:
             self.jfFlowFinished.emit(False, "Nem sikerült megnyitni a böngészőt vagy a lapot a Jófogáshoz.")
             return
@@ -131,6 +117,178 @@ class JofogasAutomator(QObject):
         except Exception as e:
             self._log(logging.ERROR, f"Hiba a nyers Jófogás adatok mentésekor: {e}", exc_info=True)
 
+    async def _scrape_ads_from_current_tab(self, page: Page, is_archived: bool) -> List[Dict[str, Any]]:
+        extracted_ads_data: List[Dict[str, Any]] = []
+        current_page_num = 1
+        absolute_position_counter = 1
+        last_page_names = []
+
+        while True:
+            self._log(logging.DEBUG, f"Adatok kinyerése az {current_page_num}. oldalról (archív: {is_archived})...", color_override="darkblue")
+            
+            # Biztosítjuk a betöltődést és a lustán (lazy load) betöltő elemeket
+            try:
+                await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                await asyncio.sleep(3)
+            except Exception:
+                pass
+
+            # --- 1. LÉPÉS: SZÖVEG MÁSOLÁSA ÉS FELDOLGOZÁSA ---
+            try:
+                body_text = await page.inner_text("body")
+            except Exception as e:
+                self._log(logging.ERROR, f"Hiba az oldal szövegének kinyerésekor: {e}")
+                break
+
+            lines = [line.strip() for line in body_text.split('\n') if line.strip()]
+            page_ads = []
+            
+            for i, line in enumerate(lines):
+                # Keressük az árat a sor végén (pl. "1 650 000 Ft" vagy "1.650.000 Ft")
+                price_match = re.match(r'^([\d\s\u00A0\.,]+)\s*Ft$', line, re.IGNORECASE)
+                
+                if price_match and i > 0:
+                    name = lines[i-1]
+                    
+                    # Fals pozitív találatok kiszűrése
+                    invalid_keywords = ["kiemelés", "előresorolás", "ajánlat", "kredit", "összesen", "megtekintés", "szállítás", "foxpost", "gls", "csomag", "napi"]
+                    if any(kw in name.lower() for kw in invalid_keywords):
+                        continue
+                        
+                    # Túl rövid, vagy csak számos nevek szűrése
+                    if len(name) < 3 or re.match(r'^[\d\s\u00A0\.,]+$', name):
+                        continue
+                        
+                    # Kategória prefixek eltávolítása a pontos egyezésért a belső adatbázissal
+                    name = re.sub(r'^(Antik Bútor|Lakáskiegészítő)\s*-\s*', '', name, flags=re.IGNORECASE).strip()
+                        
+                    price_raw = line
+                    try:
+                        price_numeric = float(re.sub(r'[^\d]', '', price_raw))
+                    except ValueError:
+                        price_numeric = 0.0
+                        
+                    expires_in_days = "N/A"
+                    views = "N/A"
+                    
+                    # Nézzük át az ár utáni következő maximum 10 sort statisztikákért
+                    for j in range(1, 11):
+                        if i+j >= len(lines):
+                            break
+                        lookahead_line = lines[i+j]
+                        
+                        # Ha egy újabb hirdetés árába botlunk, akkor álljunk meg!
+                        if re.match(r'^([\d\s\u00A0\.,]+)\s*Ft$', lookahead_line, re.IGNORECASE):
+                            prev_look = lines[i+j-1].lower()
+                            if not any(kw in prev_look for kw in invalid_keywords):
+                                break
+                                
+                        if expires_in_days == "N/A":
+                            exp_match = re.search(r'(\d+)\s*nap múlva', lookahead_line, re.IGNORECASE)
+                            if exp_match:
+                                expires_in_days = int(exp_match.group(1))
+                                
+                        if views == "N/A":
+                            views_match = re.search(r'(\d+)\s*ember látta', lookahead_line, re.IGNORECASE)
+                            if views_match:
+                                views = int(views_match.group(1))
+                                
+                    ad_data = {
+                        "name": name,
+                        "price_raw": price_raw,
+                        "price_numeric": price_numeric,
+                        "expires_in_days": expires_in_days,
+                        "views": views,
+                        "position": absolute_position_counter,
+                        "is_archived": is_archived
+                    }
+                    
+                    page_ads.append(ad_data)
+                    absolute_position_counter += 1
+
+            # --- VÉGTELEN CIKLUS VÉDELEM ÉS LEÁLLÁS ---
+            if not page_ads:
+                self._log(logging.WARNING, f"Nem található érvényes hirdetés ezen az oldalon a szöveg alapján (archív: {is_archived}).", color_override="orange")
+                break
+
+            current_page_names = [ad["name"] for ad in page_ads]
+            if current_page_num > 1 and current_page_names == last_page_names:
+                self._log(logging.INFO, f"A tartalom nem változott a lapozás után (végére értünk), vége a beolvasásnak (archív: {is_archived}).", color_override="navy")
+                break
+            last_page_names = current_page_names
+
+            extracted_ads_data.extend(page_ads)
+            self._log(logging.INFO, f"{len(page_ads)} db hirdetés sikeresen beolvasva a(z) {current_page_num}. oldalról (archív: {is_archived}).", color_override="green")
+            
+            # --- 2. LÉPÉS: LAPOZÁS KERESÉSE MINDEN MEGOLDÁSSAL ---
+            next_page_js = """
+                () => {
+                    // 1. Keresés szöveg/aria-label alapján
+                    const links = Array.from(document.querySelectorAll('a, button, [role="button"]'));
+                    for (const el of links) {
+                        const text = (el.textContent || "").trim().toLowerCase();
+                        const aria = (el.getAttribute('aria-label') || "").toLowerCase();
+                        const title = (el.getAttribute('title') || "").toLowerCase();
+                        const classText = (el.className || "").toString().toLowerCase();
+                        
+                        if ((text === 'következő' || text === '›' || text === '»' || aria.includes('következő') || title.includes('következő') || text === '>' || classText.includes('icon-arrow-right')) && 
+                            !el.hasAttribute('disabled') && 
+                            (!el.closest || !el.closest('.disabled')) &&
+                            !el.classList.contains('disabled')) {
+                            el.click();
+                            return true;
+                        }
+                    }
+                    
+                    // 2. Keresés URL minta alapján (Jófogás: ?page=2 vagy ?o=2)
+                    let nextNum = 2;
+                    const urlParams = new URLSearchParams(window.location.search);
+                    if (urlParams.has('page')) nextNum = parseInt(urlParams.get('page')) + 1;
+                    else if (urlParams.has('o')) nextNum = parseInt(urlParams.get('o')) + 1;
+                    else if (window.location.href.includes('/hirdeteseim')) nextNum = 2; // Ha nincs param, de a 1. oldalon vagyunk
+                    
+                    const pageLinks = Array.from(document.querySelectorAll('a'));
+                    for (const a of pageLinks) {
+                        try {
+                            const hrefUrl = new URL(a.href, window.location.origin);
+                            if (hrefUrl.searchParams.get('page') == nextNum || hrefUrl.searchParams.get('o') == nextNum) {
+                                a.click();
+                                return true;
+                            }
+                        } catch(e) {}
+                    }
+                    
+                    // 3. Fallback a klasszikus DOM elemhez
+                    const nextLi = document.querySelector('li.pagination-next:not(.disabled) a');
+                    if (nextLi) {
+                        nextLi.click();
+                        return true;
+                    }
+                    
+                    return false;
+                }
+            """
+            
+            try:
+                clicked = await page.evaluate(next_page_js)
+                if clicked:
+                    self._log(logging.INFO, f"Lapozás a {current_page_num + 1}. oldalra...", color_override="darkblue")
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=5000)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(2)
+                    current_page_num += 1
+                else:
+                    self._log(logging.INFO, f"Nincs több oldal a lapozáshoz (Minden hirdetés beolvasva, archív: {is_archived}).", color_override="navy")
+                    break
+            except Exception as e:
+                self._log(logging.ERROR, f"Hiba lapozás közben: {e}. Beolvasás vége (archív: {is_archived}).", color_override="red")
+                break
+
+        return extracted_ads_data
+
+
     async def _extract_jofogas_ads_data_async(self) -> List[Dict[str, Any]]:
         await self._run_jofogas_flow_async()
 
@@ -147,120 +305,35 @@ class JofogasAutomator(QObject):
 
         extracted_ads_data: List[Dict[str, Any]] = []
         page = self._jf_page
-        current_page_num = 1
-
-        absolute_position_counter = 1
 
         if not page or page.is_closed():
             self.jfDataExtractionFinished.emit("Hiba", [], False, "Nincs aktív Jófogás lap az adatok kinyeréséhez.")
             return []
 
+        # 1. Aktív hirdetések beolvasása
+        self._log(logging.INFO, "Aktív hirdetések beolvasása indult...", color_override="blue")
+        active_ads = await self._scrape_ads_from_current_tab(page, is_archived=False)
+        extracted_ads_data.extend(active_ads)
+
+        # 2. Archivált (törlés alatt) hirdetések beolvasása
+        self._log(logging.INFO, "Archivált hirdetések beolvasása indult...", color_override="blue")
+        jf_archived_url = self.settings_manager.get_setting(
+            "site_configs.jofogas.archived_products_url", 
+            "https://www.jofogas.hu/fiok/hirdeteseim/archivalt-torles-alatt"
+        )
+        default_navigation_timeout = self.settings_manager.get_setting("browser_settings.default_navigation_timeout_ms", 30000)
+        
         try:
-            while True:
-                self._log(logging.DEBUG, f"Adatok kinyerése az {current_page_num}. oldalról...", color_override="darkblue")
-                await page.wait_for_selector(".jfg-item.my-item", timeout=15000)
-                await asyncio.sleep(2)
-
-                ad_elements = await page.locator(".jfg-item.my-item").all()
-                
-                if not ad_elements:
-                    self._log(logging.WARNING, "Nem található hirdetés az oldalon.", color_override="red")
-                    break
-
-                for i, ad_element in enumerate(ad_elements):
-                    ad_data = {}
-                    try:
-                        name_element = ad_element.locator(".my-item-subject .subject")
-                        ad_data["name"] = await name_element.text_content() if name_element else "N/A"
-
-                        price_element = ad_element.locator(".my-item-price .price")
-                        price_raw_text = await price_element.text_content() if await price_element.is_visible() else "0 Ft"
-                        ad_data["price_raw"] = price_raw_text
-                        
-                        try:
-                            price_numeric = float(price_raw_text.replace("Ft", "").replace(" ", "").strip())
-                            ad_data["price_numeric"] = price_numeric
-                        except (ValueError, TypeError):
-                            ad_data["price_numeric"] = 0.0
-                    
-                        expiration_text_element = ad_element.locator(".my-item-expiration.my-item-param span.ng-binding")
-                        expiration_text = await expiration_text_element.text_content() if await expiration_text_element.is_visible() else "N/A"
-                        if expiration_text != "N/A":
-                            match = re.search(r'(\d+)\s+nap múlva', expiration_text)
-                            ad_data["expires_in_days"] = int(match.group(1)) if match else "N/A"
-                        else:
-                            ad_data["expires_in_days"] = "N/A"
-
-                        views_text_element = ad_element.locator(".my-item-views.my-item-param span.ng-binding")
-                        views_text = await views_text_element.text_content() if await views_text_element.is_visible() else "N/A"
-                        if views_text != "N/A":
-                            match = re.search(r'(\d+)\s+ember látta összesen', views_text)
-                            ad_data["views"] = int(match.group(1)) if match else "N/A"
-                        else:
-                            ad_data["views"] = "N/A"
-                        
-                        ad_data["position"] = absolute_position_counter
-                        absolute_position_counter += 1
-
-                        extracted_ads_data.append(ad_data)
-                        self._log(logging.DEBUG, f"Kinyert adat ({i+1}/{len(ad_elements)}): {ad_data}", color_override="light_blue", emit_status_signal=False)
-
-                    except Exception as e:
-                        self._log(logging.ERROR, f"Hiba egy hirdetés adatainak kinyerésekor (index {i}): {e}", color_override="red", emit_status_signal=False)
-
-                next_page_button_clickable_locator = page.locator("ul.pagination li.pagination-next:not(.disabled) a")
-                navigation_timeout = self.settings_manager.get_setting("browser_settings.default_navigation_timeout_ms", 30000)
-                
-                try:
-                    is_visible = await next_page_button_clickable_locator.is_visible(timeout=2000)
-                    is_enabled = await next_page_button_clickable_locator.is_enabled(timeout=2000)
-
-                    if is_visible and is_enabled:
-                        self._log(logging.INFO, f"Lapozás a {current_page_num + 1}. oldalra...", color_override="darkblue")
-                        
-                        # 1. Kattintás a gombra
-                        await next_page_button_clickable_locator.click(timeout=navigation_timeout)
-                        
-                        # --- JAVÍTÁS KEZDETE ---
-                        # networkidle HELYETT megvárjuk, amíg az aktív oldalszám megváltozik
-                        next_page_num = current_page_num + 1
-                        try:
-                            # Megvárjuk, amíg a lapozóban az új oldalszám lesz az aktív
-                            await page.wait_for_selector(
-                                f"ul.pagination li.pagination-page.active a:text-is('{next_page_num}')", 
-                                timeout=10000
-                            )
-                        except:
-                            # Ha a lapozó nem frissülne időben, egy fix rövid várakozás fallback-nek
-                            await asyncio.sleep(3)
-                        # --- JAVÍTÁS VÉGE ---
-
-                        current_page_num += 1
-                    else:
-                        self._log(logging.INFO, "Nincs több oldal a lapozáshoz.", color_override="navy")
-                        break
-                        
-                except TimeoutError:
-                    self._log(logging.INFO, "Nincs több oldal a lapozáshoz (időtúllépés).", color_override="navy")
-                    break
-                except Exception as e:
-                    self._log(logging.ERROR, f"Hiba lapozás közben: {e}. Lapozás vége.", color_override="red")
-                    break
-
-        except TimeoutError:
-            self._log(logging.ERROR, "Időtúllépés az adatok kinyerése során.", color_override="red")
-            self.jfDataExtractionFinished.emit("Hiba", [], False, "Időtúllépés az adatok kinyerése során.")
-            return []
+            await page.goto(jf_archived_url, timeout=default_navigation_timeout, wait_until="load")
+            archived_ads = await self._scrape_ads_from_current_tab(page, is_archived=True)
+            extracted_ads_data.extend(archived_ads)
         except Exception as e:
-            message = f"Általános hiba az adatok kinyerése során: {e}"
-            self._log(logging.ERROR, message, color_override="red")
-            self.jfDataExtractionFinished.emit("Hiba", [], False, message)
-            return []
+            self._log(logging.ERROR, f"Hiba az archivált hirdetések beolvasásakor: {e}", color_override="red")
 
         if extracted_ads_data:
             self._save_raw_jf_data(extracted_ads_data)
 
-        self.jfDataExtractionFinished.emit("Siker", extracted_ads_data, True, "Jófogás adatok sikeresen kinyerve.")
+        self.jfDataExtractionFinished.emit("Siker", extracted_ads_data, True, "Jófogás adatok (aktív és archivált) sikeresen kinyerve.")
         return extracted_ads_data
 
 
@@ -324,7 +397,7 @@ class JofogasAutomator(QObject):
 
             await self.core_automator.browser_manager.close_all_pages_async()
             # 2. Jófogás oldal objektum lekérése vagy létrehozása
-            self._jf_page = await self._get_or_create_jf_page_async(force_new=True)
+            self._jf_page = await self._get_or_create_jf_page_async(force_new=False)
             if not self._jf_page:
                 message = "Nem sikerült lapot nyitni a Jófogás hirdetésfeladáshoz."
                 self._log(logging.ERROR, message)
@@ -355,10 +428,6 @@ class JofogasAutomator(QObject):
             )
             
             success, message = await form_filler.fill_form(product_data)
-
-            # A folyamat végén (vagy ha hiba van) hozzuk elő az ablakot
-            if not self.settings_manager.get_setting("browser_settings.headless", False):
-                await self.core_automator.browser_manager.restore_window()
 
         except Exception as e:
             success = False
