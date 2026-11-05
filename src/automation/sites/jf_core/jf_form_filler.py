@@ -54,10 +54,10 @@ class JofogasFormFiller:
             
             selected_jf_categories = await self._handle_category_selection(product_data)
             
-            if selected_jf_categories and len(selected_jf_categories) > 2 and selected_jf_categories[2] != "Egyéb":
+            if selected_jf_categories and len(selected_jf_categories) > 2 and not selected_jf_categories[2].lower().startswith("egyéb"):
                 await self._handle_attributes_selection(product_data, selected_jf_categories)
             else:
-                self.log(logging.INFO, "Az 'Egyéb' kategória lett kiválasztva, a tulajdonságok panel kitöltése kihagyva.", color_override="processing")
+                self.log(logging.INFO, f"Az '{selected_jf_categories[2] if selected_jf_categories and len(selected_jf_categories) > 2 else 'Egyéb'}' kategória lett kiválasztva, a tulajdonságok panel kitöltése kihagyva.", color_override="processing")
             
             await self._fill_description(product_data)
             await self._fill_price(product_data)
@@ -92,18 +92,115 @@ class JofogasFormFiller:
         await self.page.wait_for_selector(self.NEXT_BUTTON_SELECTOR, state="visible", timeout=self.element_visibility_timeout)
         await self.page.click(self.NEXT_BUTTON_SELECTOR)
         self.log(logging.INFO, "Kattintás a 'Tovább' gombra.", color_override="processing")
+        # Megvárjuk az 1. szintű kategórialista megjelenését és az AngularJS átmenet stabilizálódását
+        await self.page.wait_for_selector(self.CATEGORY_LEVEL1_CONTAINER_SELECTOR, state="visible", timeout=self.network_idle_timeout)
+        await self.page.wait_for_timeout(400)
 
-    async def _select_category(self, level: int, category_name: str, container_selector: str):
+    async def _select_category(
+        self,
+        level: int,
+        category_name: str,
+        container_selector: str,
+        expected_next_selector: str | None = None,
+        fallback_prev_step: Callable[[], Any] | None = None,
+    ):
         self.log(logging.INFO, f"Kategória kiválasztása (Szint {level}): '{category_name}'...", color_override="processing")
-        await self.page.wait_for_selector(container_selector, state="visible", timeout=self.network_idle_timeout)
         if level == 1:
             category_option_selector = f'a:has(span.focat-text:text-is("{category_name}"))'
         else:
             category_option_selector = f'div.btn:has(span:text-is("{category_name}"))'
-        await self.page.locator(container_selector).locator(category_option_selector).click()
-        self.log(logging.DEBUG, f"'{category_name}' kategóriára kattintva.")
-        await self.page.wait_for_load_state("networkidle", timeout=self.network_idle_timeout)
-        await self.page.wait_for_timeout(200)
+
+        option_locator = self.page.locator(container_selector).locator(category_option_selector).locator("visible=true").first
+        max_attempts = 4
+
+        for attempt in range(1, max_attempts + 1):
+            try:
+                # Ha maga a konténer (pl. 3. szintű lista) tűnt volna el, csak akkor aktiváljuk újra az előző szintet
+                if attempt > 1 and fallback_prev_step is not None:
+                    if not await self.page.locator(container_selector).locator("visible=true").first.is_visible():
+                        self.log(logging.WARNING, f"A(z) {level}. szintű kategória panel nem látható, előző kategóriaszint újraaktiválása...")
+                        await fallback_prev_step()
+
+                await self.page.wait_for_selector(container_selector, state="visible", timeout=self.network_idle_timeout)
+
+                # Ha 'Egyéb...' kategóriát keresünk, és a pontos név (pl. 'Egyéb') nem található, keressük a 'Egyéb'-bel kezdődő gombot (pl. 'Egyéb bútor')
+                if level > 1 and category_name.lower().startswith("egyéb") and not await option_locator.is_visible():
+                    fallback_egyeb = self.page.locator(container_selector).locator('div.btn:has(span:text-matches("^Egyéb", "i"))').locator("visible=true").first
+                    if await fallback_egyeb.is_visible():
+                        option_locator = fallback_egyeb
+
+                try:
+                    await option_locator.wait_for(state="visible", timeout=self.element_visibility_timeout)
+                except TimeoutError:
+                    # Diagnosztika: írjuk ki, milyen látható opciók vannak a konténerben
+                    visible_texts = await self.page.locator(container_selector).evaluate(
+                        """el => Array.from(el.querySelectorAll('span, a, div.btn'))
+                            .filter(n => n.offsetParent !== null && n.textContent.trim())
+                            .map(n => n.textContent.trim())
+                            .filter((v, i, a) => a.indexOf(v) === i)
+                            .slice(0, 30)"""
+                    )
+                    self.log(logging.WARNING, f"Szint {level} ('{container_selector}') látható elemek: {visible_texts}")
+                    raise
+
+                # Kis várakozás, hogy az AngularJS ng-click eseménykezelő és az esetleges reklámbanner-elrendezés beálljon
+                await self.page.wait_for_timeout(300)
+
+                try:
+                    await option_locator.scroll_into_view_if_needed(timeout=2000)
+                except Exception:
+                    pass
+
+                if attempt <= 2:
+                    await option_locator.click(timeout=3000)
+                else:
+                    # 3. próbálkozástól közvetlen JS kattintás, ha egy átfedő réteg vagy animáció elnyelné az egérkattintást
+                    self.log(logging.DEBUG, f"Közvetlen JS kattintás alkalmazása a(z) '{category_name}' kategóriára ({attempt}. próba).")
+                    await option_locator.evaluate("el => el.click()")
+
+                self.log(logging.DEBUG, f"'{category_name}' kategóriára kattintva ({attempt}. próba).")
+
+                if not expected_next_selector:
+                    await self.page.wait_for_timeout(300)
+                    return
+
+                # Ellenőrizzük, hogy valóban megjelent-e a következő szint / várt elem (csak a látható példányt nézve!)
+                next_locator = self.page.locator(expected_next_selector).locator("visible=true").first
+                await next_locator.wait_for(state="visible", timeout=2500)
+
+                # Rövid stabilizációs szünet után újra ellenőrizzük, nem állította-e alaphelyzetbe egy háttérbeli XHR válasz
+                await self.page.wait_for_timeout(300)
+                if await next_locator.is_visible():
+                    return
+
+                self.log(
+                    logging.WARNING,
+                    f"A(z) '{category_name}' (Szint {level}) kiválasztása után a következő panel visszaállt, újrapróbálkozás ({attempt}/{max_attempts})..."
+                )
+
+            except TimeoutError:
+                try:
+                    diag = await self.page.evaluate(
+                        """({containerSel, nextSel}) => {
+                            const c = document.querySelector(containerSel);
+                            const n = document.querySelector(nextSel);
+                            const nVisible = n ? (n.offsetParent !== null) : false;
+                            const nItems = n ? Array.from(n.querySelectorAll('span')).filter(s => s.offsetParent !== null).map(s => s.textContent.trim()).slice(0, 20) : [];
+                            return { containerFound: !!c, nextFound: !!n, nextVisible: nVisible, nextVisibleItems: nItems };
+                        }""",
+                        {"containerSel": container_selector, "nextSel": expected_next_selector or ""}
+                    )
+                    self.log(logging.DEBUG, f"Diagnosztika (Szint {level} '{category_name}' után): {diag}")
+                except Exception:
+                    pass
+
+                if attempt < max_attempts:
+                    self.log(
+                        logging.WARNING,
+                        f"A(z) '{category_name}' (Szint {level}) nem aktiválódott időben ({attempt}/{max_attempts}. próba), újrakattintás..."
+                    )
+                else:
+                    raise
 
     async def _handle_category_selection(self, product_data: Dict[str, Any]) -> Tuple[str, ...]:
         app_main_cat, app_sub_cat, app_prod_type = product_data.get("main_category_name"), product_data.get("sub_category_name"), product_data.get("product_type_name")
@@ -113,23 +210,44 @@ class JofogasFormFiller:
         if not jf_categories:
             self.log(logging.WARNING, f"Nincs Jófogás kategória leképezés a(z) '{mapping_key}' számára. 'Egyéb' kategória kerül beállításra.")
             if app_main_cat == "Antik Bútor":
-                jf_categories = ("Otthon, háztartás", "Bútor", "Egyéb")
+                jf_categories = ("Otthon, háztartás", "Bútor", "Egyéb bútor")
             elif app_main_cat == "Lakáskiegészítő":
                 jf_categories = ("Otthon, háztartás", "Lakáskiegészítők", "Egyéb")
             else:
-                jf_categories = ("Otthon, háztartás", "Bútor", "Egyéb")
+                jf_categories = ("Otthon, háztartás", "Bútor", "Egyéb bútor")
         
         jf_cat_level1, jf_cat_level2, jf_cat_level3 = jf_categories
 
-        if jf_cat_level1: await self._select_category(1, jf_cat_level1, self.CATEGORY_LEVEL1_CONTAINER_SELECTOR)
-        if jf_cat_level2: await self._select_category(2, jf_cat_level2, self.CATEGORY_LEVEL2_CONTAINER_SELECTOR)
-        if jf_cat_level3: await self._select_category(3, jf_cat_level3, self.CATEGORY_LEVEL3_CONTAINER_SELECTOR)
+        level2_expected = self.CATEGORY_LEVEL2_CONTAINER_SELECTOR
+        level3_expected = self.CATEGORY_LEVEL3_CONTAINER_SELECTOR if jf_cat_level3 else self.OFFER_BUTTON_SELECTOR
+
+        if jf_cat_level1:
+            await self._select_category(
+                1, jf_cat_level1, self.CATEGORY_LEVEL1_CONTAINER_SELECTOR,
+                expected_next_selector=level2_expected
+            )
+        if jf_cat_level2:
+            await self._select_category(
+                2, jf_cat_level2, self.CATEGORY_LEVEL2_CONTAINER_SELECTOR,
+                expected_next_selector=level3_expected,
+                fallback_prev_step=(
+                    lambda: self._select_category(1, jf_cat_level1, self.CATEGORY_LEVEL1_CONTAINER_SELECTOR, expected_next_selector=level2_expected)
+                ) if jf_cat_level1 else None
+            )
+        if jf_cat_level3:
+            await self._select_category(
+                3, jf_cat_level3, self.CATEGORY_LEVEL3_CONTAINER_SELECTOR,
+                expected_next_selector=self.OFFER_BUTTON_SELECTOR,
+                fallback_prev_step=(
+                    lambda: self._select_category(2, jf_cat_level2, self.CATEGORY_LEVEL2_CONTAINER_SELECTOR, expected_next_selector=level3_expected)
+                ) if jf_cat_level2 else None
+            )
         self.log(logging.INFO, "Kategóriák sikeresen kiválasztva.", color_override="green")
 
         await self.page.wait_for_selector(self.OFFER_BUTTON_SELECTOR, state="visible", timeout=self.element_visibility_timeout)
-        await self.page.locator(self.OFFER_BUTTON_SELECTOR).click()
-        await self.page.wait_for_load_state("networkidle", timeout=self.network_idle_timeout)
         await self.page.wait_for_timeout(200)
+        await self.page.locator(self.OFFER_BUTTON_SELECTOR).click()
+        await self.page.wait_for_timeout(300)
         self.log(logging.INFO, "'Kínál' gomb sikeresen megnyomva.", color_override="green")
         
         return jf_categories

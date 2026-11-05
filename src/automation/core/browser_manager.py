@@ -110,6 +110,8 @@ class PlaywrightBrowserManager:
                 "--hide-crash-restore-bubble", "--no-first-run", "--no-default-browser-check",
                 "--enable-automation", "--disable-infobars", "--disable-blink-features=AutomationControlled",
                 "--disable-features=IsolateOrigins,site-per-process", "--disable-site-isolation-trials",
+                "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
             ]
 
             launch_args = base_args

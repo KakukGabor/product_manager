@@ -6,22 +6,27 @@ from typing import Dict, Tuple, Optional
 JF_CATEGORY_MAPPING: Dict[Tuple[str, str, str], Tuple[str, str, Optional[str]]] = {
     # --- Antik Bútor Kategóriák -> Otthon, háztartás -> Bútor ---
     ("Antik Bútor", "Ülőbútor", "Étkezőszék"):         ("Otthon, háztartás", "Bútor", "Asztalok, székek"),
-    ("Antik Bútor", "Ülőbútor", "Karosszék"):          ("Otthon, háztartás", "Bútor", "Egyéb"),
-    ("Antik Bútor", "Ülőbútor", "Hall szék"):          ("Otthon, háztartás", "Bútor", "Egyéb"),
-    ("Antik Bútor", "Ülőbútor", "Trónszék"):           ("Otthon, háztartás", "Bútor", "Egyéb"),
-    ("Antik Bútor", "Ülőbútor", "Dagobert szék"):      ("Otthon, háztartás", "Bútor", "Egyéb"),
+    ("Antik Bútor", "Ülőbútor", "Karosszék"):          ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Ülőbútor", "Hall szék"):          ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Ülőbútor", "Trónszék"):           ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Ülőbútor", "Dagobert szék"):      ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
     ("Antik Bútor", "Ülőbútor", "Kanapé"):             ("Otthon, háztartás", "Bútor", "Fotelek, kanapék, ülőgarnitúrák"),
-    ("Antik Bútor", "Ülőbútor", "Fekvőkanapé"):        ("Otthon, háztartás", "Bútor", "Egyéb"),
-    # === JAVÍTÁS: "Pad" áthelyezve az "Egyéb" kategóriába ===
-    ("Antik Bútor", "Ülőbútor", "Pad"):                ("Otthon, háztartás", "Bútor", "Egyéb"),
+    ("Antik Bútor", "Ülőbútor", "Fekvőkanapé"):        ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    # === JAVÍTÁS: "Pad" áthelyezve az "Egyéb bútor" kategóriába ===
+    ("Antik Bútor", "Ülőbútor", "Pad"):                ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
     ("Antik Bútor", "Ülőbútor", "Fotel"):              ("Otthon, háztartás", "Bútor", "Fotelek, kanapék, ülőgarnitúrák"),
-    ("Antik Bútor", "Ülőbútor", "Egyéb ülőbútor"):     ("Otthon, háztartás", "Bútor", "Egyéb"),
+    ("Antik Bútor", "Ülőbútor", "Egyéb ülőbútor"):     ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
 
     ("Antik Bútor", "Asztal", "Étkezőasztal"):          ("Otthon, háztartás", "Bútor", "Asztalok, székek"),
     ("Antik Bútor", "Asztal", "Íróasztal"):             ("Otthon, háztartás", "Bútor", "Asztalok, székek"),
-    ("Antik Bútor", "Asztal", "Konzolasztal"):          ("Otthon, háztartás", "Bútor", "Egyéb"),
-    ("Antik Bútor", "Asztal", "Társalgóasztal"):        ("Otthon, háztartás", "Bútor", "Egyéb"),
-    ("Antik Bútor", "Asztal", "Egyéb asztal"):          ("Otthon, háztartás", "Bútor", "Egyéb"),
+    ("Antik Bútor", "Asztal", "Konzolasztal"):          ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Asztal", "Társalgóasztal"):        ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Asztal", "Előkészítőasztal"):      ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Asztal", "Tálalóasztal"):          ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Asztal", "Fésülködőasztal"):       ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Asztal", "Loo asztal"):            ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Asztal", "Pedestal asztal"):       ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Asztal", "Egyéb asztal"):          ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
 
     ("Antik Bútor", "Szekrény", "Tálalószekrény"):      ("Otthon, háztartás", "Bútor", "Szekrények, szekrénysorok, polcok"),
     ("Antik Bútor", "Szekrény", "Pohárszék"):           ("Otthon, háztartás", "Bútor", "Szekrények, szekrénysorok, polcok"),
@@ -35,15 +40,20 @@ JF_CATEGORY_MAPPING: Dict[Tuple[str, str, str], Tuple[str, str, Optional[str]]] 
     ("Antik Bútor", "Szekrény", "Vitrin"):              ("Otthon, háztartás", "Bútor", "Szekrények, szekrénysorok, polcok"),
     ("Antik Bútor", "Szekrény", "Komód"):               ("Otthon, háztartás", "Bútor", "Szekrények, szekrénysorok, polcok"),
     ("Antik Bútor", "Szekrény", "Szekreter"):           ("Otthon, háztartás", "Bútor", "Szekrények, szekrénysorok, polcok"),
-    ("Antik Bútor", "Szekrény", "Egyéb szekrény"):      ("Otthon, háztartás", "Bútor", "Egyéb"),
+    ("Antik Bútor", "Szekrény", "Egyéb szekrény"):      ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
 
     ("Antik Bútor", "Egyéb Bútor", "Ágy"):              ("Otthon, háztartás", "Bútor", "Ágyak, matracok"),
-    ("Antik Bútor", "Egyéb Bútor", "Láda"):             ("Otthon, háztartás", "Bútor", "Egyéb"),
-    ("Antik Bútor", "Egyéb Bútor", "Fogas"):            ("Otthon, háztartás", "Bútor", "Egyéb"),
+    ("Antik Bútor", "Egyéb Bútor", "Falburkolat"):      ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Egyéb Bútor", "Láda"):             ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Egyéb Bútor", "Fogas"):            ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Egyéb Bútor", "Mosdóállvány"):     ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Egyéb Bútor", "Gyermekbútor"):     ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
     
     ("Antik Bútor", "Garnitúra", "Étkező"):             ("Otthon, háztartás", "Bútor", "Asztalok, székek"),
     ("Antik Bútor", "Garnitúra", "Ülő"):                ("Otthon, háztartás", "Bútor", "Fotelek, kanapék, ülőgarnitúrák"),
-    ("Antik Bútor", "Garnitúra", "Hálószoba"):          ("Otthon, háztartás", "Bútor", "Egyéb"),
+    ("Antik Bútor", "Garnitúra", "Hálószoba"):          ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Garnitúra", "Dolgozószoba"):       ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
+    ("Antik Bútor", "Garnitúra", "Előszoba"):           ("Otthon, háztartás", "Bútor", "Egyéb bútor"),
 
     # --- Lakáskiegészítő Kategóriák ---
     ("Lakáskiegészítő", "Műtárgy", "Festmény"):             ("Otthon, háztartás", "Lakáskiegészítők", "Dísztárgy, kép, festmény"),
